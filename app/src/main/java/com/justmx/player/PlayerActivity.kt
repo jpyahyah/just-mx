@@ -116,21 +116,32 @@ class PlayerActivity : AppCompatActivity() {
         }
         val mediaItem = mediaItemBuilder.build()
 
-        binding?.playerView?.player = exoPlayer
-        binding?.playerView?.visibility = View.VISIBLE
-        binding?.overlayContainer?.visibility = View.GONE
-        binding?.playerView?.isFocusable = true
-        binding?.playerView?.requestFocus()
+        val playerView = binding?.playerView
+        playerView?.player = exoPlayer
+        playerView?.visibility = View.VISIBLE
+        playerView?.isFocusable = true
+        playerView?.isFocusableInTouchMode = true
+        playerView?.requestFocus()
+        playerView?.showController()
+
+        // Asegurar que el contenedor raíz también solicite focus
+        binding?.playerContainer?.isFocusable = true
+        binding?.playerContainer?.isFocusableInTouchMode = true
+        binding?.root?.isFocusable = true
+        binding?.root?.isFocusableInTouchMode = true
+
+        setupDpPadControls()
 
         // Show controller when paused, hide when playing
         exoPlayer.addListener(object : androidx.media3.common.Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) {
-                    binding?.playerView?.hideController()
+                    playerView?.hideController()
                     binding?.btnFloatingSettings?.visibility = View.GONE
                 } else {
-                    binding?.playerView?.showController()
+                    playerView?.showController()
                     binding?.btnFloatingSettings?.visibility = View.VISIBLE
+                    playerView?.postDelayed({ playerView?.requestFocus() }, 100)
                 }
             }
         })
@@ -142,8 +153,13 @@ class PlayerActivity : AppCompatActivity() {
         player = exoPlayer
     }
 
+    /**
+     * D-Pad controls for Android TV remote.
+     * Handles key events both directly (setOnKeyListener) and as fallback in onKeyDown.
+     */
     private fun setupDpPadControls() {
-        binding?.playerView?.setOnKeyListener { _, keyCode, _ ->
+        // Key listener on the playerView surface (works when it has focus)
+        binding?.playerView?.setOnKeyListener { _, keyCode, event ->
             val exoPlayer = player ?: return@setOnKeyListener false
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_CENTER,
@@ -166,6 +182,36 @@ class PlayerActivity : AppCompatActivity() {
             }
             false
         }
+
+        // Ensure the activity intercepts D-pad events even when child views have focus
+        window.decorView.isFocusableInTouchMode = true
+        window.decorView.requestFocus()
+    }
+
+    /**
+     * Fallback: intercept all key events at Activity level for Android TV D-pad.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        val exoPlayer = player ?: return super.onKeyDown(keyCode, event)
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                exoPlayer.play()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                exoPlayer.pause()
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT -> { /* seek handled by controller */ }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> { /* seek handled by controller */ }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     /**
