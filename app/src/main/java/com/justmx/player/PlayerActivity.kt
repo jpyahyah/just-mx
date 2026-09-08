@@ -6,7 +6,9 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.datasource.DefaultDataSource
@@ -16,11 +18,15 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import com.justmx.opensubtitles.MovieHashCalculator
+import com.justmx.opensubtitles.OpenSubtitlesClient
 import com.justmx.player.databinding.ActivityPlayerBinding
 import com.justmx.player.ui.settings.SettingsActivity
 import com.justmx.player.ui.settings.SettingsDataStore
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
+import okhttp3.Request
 
 class PlayerActivity : AppCompatActivity() {
 
@@ -43,10 +49,14 @@ class PlayerActivity : AppCompatActivity() {
         setupPlayer(videoUrl, title)
         setupDpPadControls()
         setupLongPressSettings()
+
+        // Auto-descargar subtítulos si está configurado
+        if (SettingsDataStore.isAutoSubtitleDownloadEnabled(this)) {
+            fetchSubtitlesForUrl(videoUrl)
+        }
     }
 
     private fun setupPlayer(videoUrl: Uri, title: String?) {
-        // Buffer configurable desde settings
         val (minBuf, maxBuf, bufferTime) = SettingsDataStore.getBufferDurations(this)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(minBuf, maxBuf, bufferTime, bufferTime / 2)
@@ -60,7 +70,6 @@ class PlayerActivity : AppCompatActivity() {
         val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
-        // NextLib: FFmpeg SOLO para audio; video queda en hardware.
         val renderers = NextRenderersFactory(this)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
 
@@ -69,22 +78,14 @@ class PlayerActivity : AppCompatActivity() {
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
 
-        // Audio passthrough/bitstream — usar C.AUDIO_USAGE_MEDIA con contenido MUSIC
-        val usage = if (SettingsDataStore.isAudioPassthroughEnabled(this)) {
-            C.USAGE_MEDIA
-        } else {
-            C.USAGE_MEDIA
-        }
-
         exoPlayer.setAudioAttributes(
             androidx.media3.common.AudioAttributes.Builder()
-                .setUsage(usage)
+                .setUsage(if (SettingsDataStore.isAudioPassthroughEnabled(this)) C.USAGE_MEDIA else C.USAGE_MEDIA)
                 .setContentType(C.CONTENT_TYPE_MUSIC)
                 .build(),
             true
         )
 
-        // Preferir idioma configurado desde settings
         val audioLang = SettingsDataStore.getPreferredAudioLanguage(this)
         val subLang = SettingsDataStore.getPreferredSubtitleLanguage(this)
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
@@ -92,19 +93,10 @@ class PlayerActivity : AppCompatActivity() {
             .setPreferredTextLanguage(subLang)
             .build()
 
-        // Frame-rate matching (AFR) — Media3 lo gestiona automáticamente si el hardware lo soporta
-        // No se puede forzar manualmente sin APIs avanzadas; dejar que ExoPlayer lo maneje.
-
-        // Construir MediaItem
-        val mediaItemBuilder = MediaItem.Builder()
-            .setUri(videoUrl)
-
+        val mediaItemBuilder = MediaItem.Builder().setUri(videoUrl)
         title?.let {
-            mediaItemBuilder.setMediaMetadata(
-                MediaMetadata.Builder().setTitle(it).build()
-            )
+            mediaItemBuilder.setMediaMetadata(MediaMetadata.Builder().setTitle(it).build())
         }
-
         val mediaItem = mediaItemBuilder.build()
 
         binding?.playerView?.player = exoPlayer
@@ -119,7 +111,105 @@ class PlayerActivity : AppCompatActivity() {
         player = exoPlayer
     }
 
-    // Navegación por D-pad para Android TV
+    /**
+     * Fase 3: Calcular moviehash de OpenSubtitles leyendo por Range los primeros/últimos 64KB
+     * de la URL de Real-Debrid, consultar la API y sidecar el .srt descargado.
+     */
+    private fun fetchSubtitlesForUrl(videoUrl: Uri) {
+        val url = videoUrl.toString()
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return
+
+        lifecycleScope.launch {
+            val okHttpClient = OkHttpClient()
+
+            // 1. HEAD para obtener Content-Length
+            val headRequest = Request.Builder().url(url).head().build()
+            val headResponse = try {
+                okHttpClient.newCall(headRequest).execute()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+
+            if (headResponse?.isSuccessful != true) return@launch
+            headResponse.close()
+
+            val contentLength = headResponse.header("Content-Length")?.toLongOrNull() ?: 0L
+            if (contentLength <= 0) return@launch
+
+            // 2. Range request para primeros 64KB
+            val headRange = Request.Builder()
+                .url(url)
+                .header("Range", "bytes=0-65535")
+                .build()
+            val headStreamResponse = okHttpClient.newCall(headRange).execute()
+            if (!headStreamResponse.isSuccessful) return@launch
+            val headInputStream = headStreamResponse.body?.byteStream() ?: return@launch
+
+            // 3. Range request para últimos 64KB
+            val tailStart = maxOf(0L, contentLength - 65536)
+            val tailRange = Request.Builder()
+                .url(url)
+                .header("Range", "bytes=$tailStart-${contentLength - 1}")
+                .build()
+            val tailStreamResponse = okHttpClient.newCall(tailRange).execute()
+            if (!tailStreamResponse.isSuccessful) return@launch
+            val tailInputStream = tailStreamResponse.body?.byteStream() ?: return@launch
+
+            // 4. Calcular moviehash
+            val hash = try {
+                MovieHashCalculator.computeHash(contentLength, headInputStream, tailInputStream)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+
+            headInputStream.close()
+            tailInputStream.close()
+            headStreamResponse.close()
+            tailStreamResponse.close()
+
+            if (hash == null) return@launch
+            if (hash == "0000000000000000" || hash.length != 16) return@launch
+
+            // 5. Consultar OpenSubtitles
+            val client = OpenSubtitlesClient()
+            val subtitleUrl = client.findSubtitlesByHash(hash, listOf("spa", "eng"))
+
+            if (subtitleUrl != null) {
+                // 6. Sidecar el subtítulo
+                addSubtitleToPlayer(subtitleUrl)
+            }
+        }
+    }
+
+    /**
+     * Agrega un subtítulo externo al reproductor.
+     * @param subtitleUrl URL directa al .srt descargado (link de OpenSubtitles).
+     */
+    private fun addSubtitleToPlayer(subtitleUrl: String) {
+        val exoPlayer = player ?: return
+
+        val subtitleUri = Uri.parse(subtitleUrl)
+        val mediaItem = exoPlayer.currentMediaItem
+        val updatedItem = mediaItem?.buildUpon()
+            ?.setSubtitleConfigurations(
+                listOf(
+                    MediaItem.SubtitleConfiguration.Builder(subtitleUri)
+                        .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                        .setLanguage("spa")
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .build()
+                )
+            )
+            ?.build()
+
+        if (updatedItem != null) {
+            exoPlayer.setMediaItem(updatedItem, true)
+            exoPlayer.prepare()
+        }
+    }
+
     private fun setupDpPadControls() {
         binding?.playerView?.setOnKeyListener { _, keyCode, _ ->
             val exoPlayer = player ?: return@setOnKeyListener false
@@ -146,11 +236,9 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    // Long-press en el player para abrir ajustes
     private fun setupLongPressSettings() {
         binding?.playerView?.setOnLongClickListener {
-            val intent = Intent(this, SettingsActivity::class.java)
-            startActivity(intent)
+            startActivity(Intent(this, SettingsActivity::class.java))
             true
         }
     }
@@ -163,7 +251,6 @@ class PlayerActivity : AppCompatActivity() {
             resultIntent.putExtra("duration", player?.duration ?: 0L)
             setResult(RESULT_OK, resultIntent)
         }
-
         player?.pause()
     }
 
