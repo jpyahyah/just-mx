@@ -1,21 +1,64 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/player_container"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:background="@android:color/black"
     android:descendantFocusability="beforeDescendants"
     android:focusableInTouchMode="true">
 
+    <!-- Reproductor -->
     <androidx.media3.ui.PlayerView
         android:id="@+id/playerView"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
+        android:layout_height="match_parent"
         app:auto_show="true"
         app:use_controller="true"
         app:hide_on_touch="false" />
 
-</LinearLayout>
+    <!-- Overlay para mensajes y botón de settings (visible cuando no hay video o pausado) -->
+    <LinearLayout
+        android:id="@+id/overlay_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvMessage"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="JUST MX - Selecciona un video o abre desde Stremio"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:layout_marginBottom="32dp" />
+
+        <ImageButton
+            android:id="@+id/btnSettings"
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:background="@drawable/ic_settings_rounded"
+            android:src="@drawable/ic_android_settings_24"
+            android:tint="#FFFFFF"
+            android:contentDescription="Ajustes"
+            android:focusable="true"
+            android:focusableInTouchMode="true" />
+
+    </LinearLayout>
+
+    <!-- Botón de settings flotante (siempre visible durante reproducción) -->
+    <ImageButton
+        android:id="@+id/btnFloatingSettings"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="16dp"
+        android:background="@drawable/ic_settings_rounded"
+        android:src="@drawable/ic_android_settings_24"
+        android:tint="#FFFFFF"
+        android:contentDescription="Ajustes"
+        android:visibility="gone" />
+
+</FrameLayout>

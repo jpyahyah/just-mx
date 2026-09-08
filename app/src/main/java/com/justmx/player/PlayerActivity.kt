@@ -40,15 +40,32 @@ class PlayerActivity : AppCompatActivity() {
         setContentView(binding!!.root)
 
         val videoUrl: Uri? = intent?.data
+
+        // Configurar listeners de settings (siempre visibles)
+        binding?.btnFloatingSettings?.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        binding?.btnSettings?.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+
+        binding?.playerView?.setOnLongClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+            true
+        }
+
         if (videoUrl == null) {
-            finish()
+            // Mostrar overlay de bienvenida con botón de settings
+            binding?.overlayContainer?.visibility = View.VISIBLE
+            binding?.tvMessage?.text = "JUST MX\n\nNo hay video para reproducir.\nAbre un video desde Stremio o usa el botón de ajustes."
+            binding?.playerView?.visibility = View.GONE
             return
         }
+
         val title: String? = intent?.getStringExtra("title")
 
         setupPlayer(videoUrl, title)
         setupDpPadControls()
-        setupLongPressSettings()
 
         // Auto-descargar subtítulos si está configurado
         if (SettingsDataStore.isAutoSubtitleDownloadEnabled(this)) {
@@ -78,20 +95,20 @@ class PlayerActivity : AppCompatActivity() {
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
 
-        exoPlayer.setAudioAttributes(
-            androidx.media3.common.AudioAttributes.Builder()
-                .setUsage(if (SettingsDataStore.isAudioPassthroughEnabled(this)) C.USAGE_MEDIA else C.USAGE_MEDIA)
-                .setContentType(C.CONTENT_TYPE_MUSIC)
-                .build(),
-            true
-        )
-
+        // Audio passthrough/bitstream
         val audioLang = SettingsDataStore.getPreferredAudioLanguage(this)
         val subLang = SettingsDataStore.getPreferredSubtitleLanguage(this)
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
             .setPreferredAudioLanguage(audioLang)
             .setPreferredTextLanguage(subLang)
             .build()
+
+        // Audio attributes
+        val audioAttrs = androidx.media3.common.AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.CONTENT_TYPE_MOVIE)
+            .build()
+        exoPlayer.setAudioAttributes(audioAttrs, true)
 
         val mediaItemBuilder = MediaItem.Builder().setUri(videoUrl)
         title?.let {
@@ -101,14 +118,54 @@ class PlayerActivity : AppCompatActivity() {
 
         binding?.playerView?.player = exoPlayer
         binding?.playerView?.visibility = View.VISIBLE
+        binding?.overlayContainer?.visibility = View.GONE
         binding?.playerView?.isFocusable = true
         binding?.playerView?.requestFocus()
+
+        // Show controller when paused, hide when playing
+        exoPlayer.addListener(object : androidx.media3.common.Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    binding?.playerView?.hideController()
+                    binding?.btnFloatingSettings?.visibility = View.GONE
+                } else {
+                    binding?.playerView?.showController()
+                    binding?.btnFloatingSettings?.visibility = View.VISIBLE
+                }
+            }
+        })
 
         exoPlayer.setMediaItem(mediaItem)
         exoPlayer.playWhenReady = true
         exoPlayer.prepare()
 
         player = exoPlayer
+    }
+
+    private fun setupDpPadControls() {
+        binding?.playerView?.setOnKeyListener { _, keyCode, _ ->
+            val exoPlayer = player ?: return@setOnKeyListener false
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER -> {
+                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                    true
+                }
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                    true
+                }
+                KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                    exoPlayer.play()
+                    true
+                }
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                    exoPlayer.pause()
+                    true
+                }
+            }
+            false
+        }
     }
 
     /**
@@ -132,9 +189,8 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             if (headResponse?.isSuccessful != true) return@launch
-            headResponse.close()
-
             val contentLength = headResponse.header("Content-Length")?.toLongOrNull() ?: 0L
+            headResponse.close()
             if (contentLength <= 0) return@launch
 
             // 2. Range request para primeros 64KB
@@ -207,39 +263,6 @@ class PlayerActivity : AppCompatActivity() {
         if (updatedItem != null) {
             exoPlayer.setMediaItem(updatedItem, true)
             exoPlayer.prepare()
-        }
-    }
-
-    private fun setupDpPadControls() {
-        binding?.playerView?.setOnKeyListener { _, keyCode, _ ->
-            val exoPlayer = player ?: return@setOnKeyListener false
-            when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_CENTER,
-                KeyEvent.KEYCODE_ENTER -> {
-                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                    true
-                }
-                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                    true
-                }
-                KeyEvent.KEYCODE_MEDIA_PLAY -> {
-                    exoPlayer.play()
-                    true
-                }
-                KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                    exoPlayer.pause()
-                    true
-                }
-            }
-            false
-        }
-    }
-
-    private fun setupLongPressSettings() {
-        binding?.playerView?.setOnLongClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
-            true
         }
     }
 
