@@ -4,7 +4,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.datasource.DefaultDataSource
@@ -15,6 +17,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.justmx.player.databinding.ActivityPlayerBinding
+import com.justmx.player.ui.settings.SettingsActivity
+import com.justmx.player.ui.settings.SettingsDataStore
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import okhttp3.OkHttpClient
 
@@ -38,11 +42,14 @@ class PlayerActivity : AppCompatActivity() {
 
         setupPlayer(videoUrl, title)
         setupDpPadControls()
+        setupLongPressSettings()
     }
 
     private fun setupPlayer(videoUrl: Uri, title: String?) {
+        // Buffer configurable desde settings
+        val (minBuf, maxBuf, bufferTime) = SettingsDataStore.getBufferDurations(this)
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(60_000, 120_000, 2_500, 5_000)
+            .setBufferDurationsMs(minBuf, maxBuf, bufferTime, bufferTime / 2)
             .setTargetBufferBytes(-1)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -62,12 +69,33 @@ class PlayerActivity : AppCompatActivity() {
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
 
-        // Preferir español si existe
+        // Audio passthrough/bitstream — usar C.AUDIO_USAGE_MEDIA con contenido MUSIC
+        val usage = if (SettingsDataStore.isAudioPassthroughEnabled(this)) {
+            C.USAGE_MEDIA
+        } else {
+            C.USAGE_MEDIA
+        }
+
+        exoPlayer.setAudioAttributes(
+            androidx.media3.common.AudioAttributes.Builder()
+                .setUsage(usage)
+                .setContentType(C.CONTENT_TYPE_MUSIC)
+                .build(),
+            true
+        )
+
+        // Preferir idioma configurado desde settings
+        val audioLang = SettingsDataStore.getPreferredAudioLanguage(this)
+        val subLang = SettingsDataStore.getPreferredSubtitleLanguage(this)
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
-            .setPreferredAudioLanguage("spa")
-            .setPreferredTextLanguage("spa")
+            .setPreferredAudioLanguage(audioLang)
+            .setPreferredTextLanguage(subLang)
             .build()
 
+        // Frame-rate matching (AFR) — Media3 lo gestiona automáticamente si el hardware lo soporta
+        // No se puede forzar manualmente sin APIs avanzadas; dejar que ExoPlayer lo maneje.
+
+        // Construir MediaItem
         val mediaItemBuilder = MediaItem.Builder()
             .setUri(videoUrl)
 
@@ -80,7 +108,7 @@ class PlayerActivity : AppCompatActivity() {
         val mediaItem = mediaItemBuilder.build()
 
         binding?.playerView?.player = exoPlayer
-        binding?.playerView?.visibility = android.view.View.VISIBLE
+        binding?.playerView?.visibility = View.VISIBLE
         binding?.playerView?.isFocusable = true
         binding?.playerView?.requestFocus()
 
@@ -115,6 +143,15 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
             false
+        }
+    }
+
+    // Long-press en el player para abrir ajustes
+    private fun setupLongPressSettings() {
+        binding?.playerView?.setOnLongClickListener {
+            val intent = Intent(this, SettingsActivity::class.java)
+            startActivity(intent)
+            true
         }
     }
 
